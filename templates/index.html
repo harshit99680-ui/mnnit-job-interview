@@ -1,0 +1,127 @@
+
+from flask import Flask, render_template, request, redirect, flash
+import sqlite3
+from datetime import date
+
+app = Flask(__name__)
+app.secret_key = "mnnit-job-interview-demo"
+DATABASE = "interviews.db"
+
+
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with get_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS interviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate TEXT NOT NULL,
+                email TEXT NOT NULL,
+                interviewer TEXT NOT NULL,
+                room TEXT NOT NULL,
+                interview_date TEXT NOT NULL,
+                interview_round TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL
+            )
+        """)
+
+
+@app.route("/")
+def home():
+    with get_db() as db:
+        interviews = db.execute(
+            "SELECT * FROM interviews ORDER BY interview_date, start_time"
+        ).fetchall()
+
+    today = date.today().isoformat()
+    upcoming = sum(1 for item in interviews if item["interview_date"] >= today)
+
+    return render_template(
+        "index.html",
+        interviews=interviews,
+        total=len(interviews),
+        upcoming=upcoming
+    )
+
+
+@app.route("/schedule", methods=["POST"])
+def schedule():
+    candidate = request.form.get("candidate", "").strip()
+    email = request.form.get("email", "").strip()
+    interviewer = request.form.get("interviewer", "").strip()
+    room = request.form.get("room", "").strip()
+    interview_date = request.form.get("interview_date", "")
+    interview_round = request.form.get("interview_round", "")
+    start_time = request.form.get("start_time", "")
+    end_time = request.form.get("end_time", "")
+    print("FORM DATA RECEIVED:", request.form.to_dict())
+
+    if not all([candidate, email, interviewer, room, interview_date,
+                interview_round, start_time, end_time]):
+        flash("Please fill in every field.", "error")
+        return redirect("/")
+
+    if start_time >= end_time:
+        flash("End time must be later than start time.", "error")
+        return redirect("/")
+
+    if interview_date < date.today().isoformat():
+        flash("Please select today or a future date.", "error")
+        return redirect("/")
+
+    with get_db() as db:
+        conflict = db.execute("""
+            SELECT * FROM interviews
+            WHERE interview_date = ?
+              AND start_time < ?
+              AND end_time > ?
+              AND (
+                lower(candidate) = lower(?)
+                OR lower(interviewer) = lower(?)
+                OR lower(room) = lower(?)
+              )
+        """, (
+            interview_date, end_time, start_time,
+            candidate, interviewer, room
+        )).fetchone()
+
+        if conflict:
+            flash(
+                "Scheduling conflict: this candidate, interviewer, "
+                "or room already has an overlapping interview.",
+                "error"
+            )
+            return redirect("/")
+
+        db.execute("""
+            INSERT INTO interviews
+            (candidate, email, interviewer, room, interview_date,
+             interview_round, start_time, end_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            candidate, email, interviewer, room, interview_date,
+            interview_round, start_time, end_time
+        ))
+
+    flash("Interview scheduled successfully!", "success")
+    return redirect("/")
+
+
+@app.route("/delete/<int:interview_id>", methods=["POST"])
+def delete_interview(interview_id):
+    with get_db() as db:
+        db.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
+    flash("Interview booking deleted.", "success")
+    return redirect("/")
+
+
+if __name__ == "__main__":
+    init_db()
+    app.run(debug=True)
+else:
+    init_db()
